@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArchGuard Dashboard</title>
+
+    <!-- Tailwind CSS (Warning in console is normal for dev/no-build usage) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Babel for compiling JSX in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Import Maps to resolve module imports -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@18.2.0",
+          "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+          "three": "https://esm.sh/three@0.160.0",
+          "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.14?deps=three@0.160.0,react@18.2.0",
+          "@react-three/drei": "https://esm.sh/@react-three/drei@9.96.1?deps=three@0.160.0,react@18.2.0,@react-three/fiber@8.15.14",
+          "lucide-react": "https://esm.sh/lucide-react@0.330.0?deps=react@18.2.0"
+        }
+      }
+    </script>
+
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; background: #06080a; }
+        #root { height: 100%; }
+        @keyframes spin-slow {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin-slow {
+            animation: spin-slow 8s linear infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Canvas, useFrame } from '@react-three/fiber';
+        import { OrbitControls, Environment, ContactShadows } from '@react-three/drei';
+        import { 
+          Activity, Video, Users, AlertTriangle, Globe, 
+          Settings, Trash2, Plus, Crosshair, Clock, ShieldAlert 
+        } from 'lucide-react';
+
+        const dict = {
+          en: {
+            title: "ArchGuard / Command Center",
+            helmetData: "Telemetry & Orientation",
+            accel: "Accelerometer (G-Force)",
+            gyro: "Gyroscope (Rotation)",
+            timeInCave: "Time in Cave",
+            alertFeed: "System Hazard Feed",
+            liveCam: "Live Camera Stream (WebRTC/MJPEG)",
+            userMgmt: "User Management",
+            addUser: "Add User",
+            bindDevice: "Bind Device",
+            inactivity: "Inactivity Detected",
+            vibration: "Abnormal Vibration",
+            posture: "Poor Posture",
+            fall: "Fall Detected",
+            clear: "Clear",
+            name: "Archaeologist Name",
+            ipAddress: "Raspberry Pi IP",
+            live: "LIVE",
+            bind: "Bind IP",
+            standby: "Awaiting Stream...",
+            cameraLost: "Camera stream unavailable",
+            statusOnline: "STATUS: ONLINE",
+            statusOffline: "STATUS: OFFLINE",
+            yoloPanel: "Local YOLO26X Detector",
+            yoloEnable: "Enable Local YOLO",
+            yoloDisable: "Disable Local YOLO",
+            localAiOnline: "LOCAL AI: ONLINE",
+            localAiOffline: "LOCAL AI: OFFLINE",
+            yoloHint: "Runs on this computer, not on Raspberry Pi"
+          },
+          ru: {
+            title: "ArchGuard / Командный Центр",
+            helmetData: "Телеметрия и Ориентация",
+            accel: "Акселерометр (G-сила)",
+            gyro: "Гироскоп (Вращение)",
+            timeInCave: "Время в пещере",
+            alertFeed: "Лента системных угроз",
+            liveCam: "Прямая трансляция (WebRTC/MJPEG)",
+            userMgmt: "Управление персоналом",
+            addUser: "Добавить",
+            bindDevice: "Привязать Устройство",
+            inactivity: "Обнаружена неактивность",
+            vibration: "Аномальная вибрация",
+            posture: "Неправильная осанка",
+            fall: "Обнаружено падение",
+            clear: "Очистить",
+            name: "Имя археолога",
+            ipAddress: "IP-адрес Raspberry Pi",
+            live: "В ЭФИРЕ",
+            bind: "Привязать IP",
+            standby: "Ожидание потока...",
+            cameraLost: "Камера недоступна",
+            statusOnline: "СТАТУС: ОНЛАЙН",
+            statusOffline: "СТАТУС: НЕТ СВЯЗИ",
+            yoloPanel: "Локальный детектор YOLO26X",
+            yoloEnable: "Включить локальный YOLO",
+            yoloDisable: "Выключить локальный YOLO",
+            localAiOnline: "ЛОКАЛЬНЫЙ ИИ: ОНЛАЙН",
+            localAiOffline: "ЛОКАЛЬНЫЙ ИИ: НЕТ СВЯЗИ",
+            yoloHint: "Работает на этом компьютере, не на Raspberry Pi"
+          }
+        };
+
+        const API_CANDIDATES = [
+          'http://arch-helmet.local:5000',
+          'http://localhost:5000',
+          'http://127.0.0.1:5000'
+        ];
+        const TELEMETRY_POLL_MS = 33;
+        const FETCH_TIMEOUT_MS = 350;
+        const YOLO_API_CANDIDATES = [
+          'http://localhost:8001',
+          'http://127.0.0.1:8001'
+        ];
+        const YOLO_POLL_MS = 700;
+        const YOLO_FETCH_TIMEOUT_MS = 700;
+
+        const HardHat = ({ rotation }) => {
+          const meshRef = useRef();
+
+          useFrame((_, delta) => {
+            if (!meshRef.current) return;
+            const targetX = rotation?.[0] ?? 0;
+            const targetY = rotation?.[1] ?? 0;
+            const targetZ = rotation?.[2] ?? 0;
+            const smoothing = 1 - Math.exp(-18 * delta);
+            meshRef.current.rotation.x += (targetX - meshRef.current.rotation.x) * smoothing;
+            meshRef.current.rotation.y += (targetY - meshRef.current.rotation.y) * smoothing;
+            meshRef.current.rotation.z += (targetZ - meshRef.current.rotation.z) * smoothing;
+          });
+
+          return (
+            <group ref={meshRef}>
+              {/* FIXED: Replaced hemisphereGeometry with a half-sphereGeometry */}
+              <mesh position={[0, 0.2, 0]}>
+                <sphereGeometry args={[1.2, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2]} />
+                <meshStandardMaterial color="#f59e0b" metalness={0.4} roughness={0.3} />
+              </mesh>
+              {/* Helmet Brim */}
+              <mesh position={[0, 0.1, 0.2]} rotation={[Math.PI / 2, 0, 0]}>
+                <cylinderGeometry args={[1.3, 1.3, 0.1, 32]} />
+                <meshStandardMaterial color="#d97706" metalness={0.4} roughness={0.3} />
+              </mesh>
+              {/* Flashlight base */}
+              <mesh position={[0, 0.8, 1.1]} rotation={[Math.PI / 2, 0, 0]}>
+                <cylinderGeometry args={[0.2, 0.2, 0.3, 16]} />
+                <meshStandardMaterial color="#333" />
+              </mesh>
+              {/* Flashlight glass */}
+              <mesh position={[0, 0.8, 1.26]} rotation={[Math.PI / 2, 0, 0]}>
+                <circleGeometry args={[0.18, 16]} />
+                <meshBasicMaterial color="#ffffff" />
+              </mesh>
+            </group>
+          );
+        };
+
+        function ArchGuardDashboard() {
+          const [lang, setLang] = useState('en');
+          const t = dict[lang];
+
+          const toNumber = (value, fallback = 0) => {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
+          };
+
+          const [rotation, setRotation] = useState([0, 0, 0]);
+          const [accel, setAccel] = useState({ x: 0, y: 1.0, z: 0 });
+          const [gyro, setGyro] = useState({ x: 0, y: 0, z: 0 });
+          const[timeInCave, setTimeInCave] = useState(0);
+          const [alerts, setAlerts] = useState([]);
+          const [backendBase, setBackendBase] = useState(API_CANDIDATES[0]);
+          const [nodeOnline, setNodeOnline] = useState(false);
+          const [streamError, setStreamError] = useState(false);
+          const [yoloEnabled, setYoloEnabled] = useState(false);
+          const [yoloOnline, setYoloOnline] = useState(false);
+          const [yoloBase, setYoloBase] = useState(YOLO_API_CANDIDATES[0]);
+          const lastHazardsRef = useRef({ impact: false, stationary: false });
+          const backendBaseRef = useRef(API_CANDIDATES[0]);
+          const pollBusyRef = useRef(false);
+          const yoloBaseRef = useRef(YOLO_API_CANDIDATES[0]);
+          const yoloPollBusyRef = useRef(false);
+          const yoloToggleBusyRef = useRef(false);
+          
+          const [users, setUsers] = useState([
+            { id: 1, name: "Dr. Elena Rostova", ip: "192.168.1.104" },
+            { id: 2, name: "Marcus Thorne", ip: "Unbound" }
+          ]);
+          const [newUserName, setNewUserName] = useState('');
+
+          useEffect(() => {
+            setStreamError(false);
+          }, [backendBase, yoloBase, yoloEnabled]);
+
+          useEffect(() => {
+            const timerId = setInterval(() => setTimeInCave(prev => prev + 1), 1000);
+
+            const fetchStatusFromCandidates = async () => {
+              const candidates = [
+                backendBaseRef.current,
+                ...API_CANDIDATES.filter(base => base !== backendBaseRef.current)
+              ];
+              let lastError = null;
+
+              for (const base of candidates) {
+                try {
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+                  let response;
+                  try {
+                    response = await fetch(`${base}/status`, {
+                      cache: 'no-store',
+                      signal: controller.signal
+                    });
+                  } finally {
+                    clearTimeout(timeoutId);
+                  }
+                  if (!response.ok) {
+                    throw new Error(`Telemetry endpoint returned ${response.status}`);
+                  }
+                  const payload = await response.json();
+                  if (base !== backendBaseRef.current) {
+                    backendBaseRef.current = base;
+                    setBackendBase(base);
+                  }
+                  return payload;
+                } catch (err) {
+                  lastError = err;
+                }
+              }
+
+              throw lastError ?? new Error('No telemetry endpoint reachable');
+            };
+
+            const fetchData = async () => {
+              if (pollBusyRef.current) return;
+              pollBusyRef.current = true;
+
+              try {
+                const data = await fetchStatusFromCandidates();
+                setNodeOnline(true);
+                setStreamError(prev => (prev ? false : prev));
+
+                const orientation = data?.orientation ?? {};
+                const accelData = data?.accel ?? {};
+                const gyroData = data?.gyro ?? {};
+                const hazards = data?.hazards ?? {};
+
+                const pitchRad = toNumber(orientation.pitch) * (Math.PI / 180);
+                const rollRad  = toNumber(orientation.roll) * (Math.PI / 180);
+
+                setRotation([pitchRad, 0, rollRad]);
+                setAccel({
+                  x: toNumber(accelData.x, 0),
+                  y: toNumber(accelData.y, 1),
+                  z: toNumber(accelData.z, 0)
+                });
+                setGyro({
+                  x: toNumber(gyroData.x, 0),
+                  y: toNumber(gyroData.y, 0),
+                  z: toNumber(gyroData.z, 0)
+                });
+
+                const impactActive = Boolean(hazards.impact);
+                const stationaryActive = Boolean(hazards.stationary);
+
+                if (impactActive && !lastHazardsRef.current.impact) {
+                  setAlerts(prev => [{
+                    id: Date.now(), type: 'fall', message: t.fall,
+                    time: new Date().toLocaleTimeString(lang === 'en' ? 'en-US' : 'ru-RU'), severity: 'high'
+                  }, ...prev].slice(0, 5));
+                }
+                if (stationaryActive && !lastHazardsRef.current.stationary) {
+                  setAlerts(prev => [{
+                    id: Date.now() + 1, type: 'inactivity', message: t.inactivity,
+                    time: new Date().toLocaleTimeString(lang === 'en' ? 'en-US' : 'ru-RU'), severity: 'medium'
+                  }, ...prev].slice(0, 5));
+                }
+
+                lastHazardsRef.current = {
+                  impact: impactActive,
+                  stationary: stationaryActive
+                };
+              } catch (err) {
+                setNodeOnline(false);
+              } finally {
+                pollBusyRef.current = false;
+              }
+            };
+
+            fetchData();
+            const pollId = setInterval(fetchData, TELEMETRY_POLL_MS);
+
+            return () => {
+              clearInterval(timerId);
+              clearInterval(pollId);
+            };
+          }, [lang, t]);
+
+          useEffect(() => {
+            const fetchYoloStatusFromCandidates = async () => {
+              const candidates = [
+                yoloBaseRef.current,
+                ...YOLO_API_CANDIDATES.filter(base => base !== yoloBaseRef.current)
+              ];
+              let lastError = null;
+
+              for (const base of candidates) {
+                try {
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), YOLO_FETCH_TIMEOUT_MS);
+                  let response;
+                  try {
+                    response = await fetch(`${base}/yolo/status`, {
+                      cache: 'no-store',
+                      signal: controller.signal
+                    });
+                  } finally {
+                    clearTimeout(timeoutId);
+                  }
+
+                  if (!response.ok) {
+                    throw new Error(`YOLO status endpoint returned ${response.status}`);
+                  }
+
+                  const payload = await response.json();
+                  if (base !== yoloBaseRef.current) {
+                    yoloBaseRef.current = base;
+                    setYoloBase(base);
+                  }
+                  return payload;
+                } catch (err) {
+                  lastError = err;
+                }
+              }
+
+              throw lastError ?? new Error('No local YOLO endpoint reachable');
+            };
+
+            const pollYoloStatus = async () => {
+              if (yoloPollBusyRef.current) return;
+              yoloPollBusyRef.current = true;
+
+              try {
+                const payload = await fetchYoloStatusFromCandidates();
+                setYoloOnline(true);
+                setYoloEnabled(Boolean(payload?.enabled));
+              } catch (err) {
+                setYoloOnline(false);
+              } finally {
+                yoloPollBusyRef.current = false;
+              }
+            };
+
+            pollYoloStatus();
+            const pollId = setInterval(pollYoloStatus, YOLO_POLL_MS);
+
+            return () => {
+              clearInterval(pollId);
+            };
+          }, []);
+
+          const formatTime = (totalSeconds) => {
+            const h = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+            const m = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+            const s = (totalSeconds % 60).toString().padStart(2, '0');
+            return `${h}:${m}:${s}`;
+          };
+
+          const addUser = () => {
+            if (newUserName.trim()) {
+              setUsers([...users, { id: Date.now(), name: newUserName, ip: "Unbound" }]);
+              setNewUserName('');
+            }
+          };
+
+          const toggleYolo = async () => {
+            if (yoloToggleBusyRef.current) return;
+            yoloToggleBusyRef.current = true;
+
+            const targetEnabled = !yoloEnabled;
+            const candidates = [
+              yoloBaseRef.current,
+              ...YOLO_API_CANDIDATES.filter(base => base !== yoloBaseRef.current)
+            ];
+
+            let lastError = null;
+            try {
+              for (const base of candidates) {
+                try {
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), YOLO_FETCH_TIMEOUT_MS);
+                  let response;
+                  try {
+                    response = await fetch(`${base}/yolo/toggle`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ enabled: targetEnabled }),
+                      signal: controller.signal
+                    });
+                  } finally {
+                    clearTimeout(timeoutId);
+                  }
+
+                  if (!response.ok) {
+                    throw new Error(`YOLO toggle endpoint returned ${response.status}`);
+                  }
+
+                  const payload = await response.json();
+                  if (base !== yoloBaseRef.current) {
+                    yoloBaseRef.current = base;
+                    setYoloBase(base);
+                  }
+
+                  const enabled = Boolean(payload?.enabled);
+                  setYoloEnabled(enabled);
+                  setYoloOnline(true);
+                  return;
+                } catch (err) {
+                  lastError = err;
+                }
+              }
+
+              throw lastError ?? new Error('No local YOLO endpoint reachable');
+            } catch (err) {
+              setYoloOnline(false);
+            } finally {
+              yoloToggleBusyRef.current = false;
+            }
+          };
+
+          const deleteUser = (id) => setUsers(users.filter(u => u.id !== id));
+          const streamSrc = yoloEnabled ? `${yoloBase}/yolo/video` : `${backendBase}/video`;
+
+          return (
+            <div className="min-h-screen bg-[#06080a] text-gray-300 font-sans selection:bg-amber-500 selection:text-black relative overflow-hidden flex flex-col">
+              
+              {/* Topographic Background */}
+              <div 
+                className="absolute inset-0 opacity-10 pointer-events-none" 
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z' fill='%233b82f6' fill-opacity='0.15' fill-rule='evenodd'/%3E%3C/svg%3E")`,
+                  backgroundSize: '800px'
+                }}
+              />
+
+              {/* Header */}
+              <header className="relative z-10 flex items-center justify-between px-6 py-4 border-b border-[#1f2937] bg-[#0b0f13]/80 backdrop-blur-md">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-amber-500/10 rounded-lg border border-amber-500/30">
+                    <Activity className="w-6 h-6 text-amber-500" />
+                  </div>
+                  <h1 className="text-xl font-bold tracking-widest text-white">{t.title}</h1>
+                </div>
+                <div className="flex items-center gap-6">
+                  <div className={`flex items-center gap-2 text-xs font-mono px-3 py-1 rounded-full border ${
+                    nodeOnline
+                      ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
+                      : 'text-red-400 bg-red-400/10 border-red-400/20'
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${nodeOnline ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+                    {nodeOnline ? t.statusOnline : t.statusOffline}
+                  </div>
+                  <button 
+                    onClick={() => setLang(lang === 'en' ? 'ru' : 'en')}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1f2937] hover:bg-[#374151] rounded-md transition-colors border border-gray-700"
+                  >
+                    <Globe className="w-4 h-4" />
+                    {lang.toUpperCase()}
+                  </button>
+                </div>
+              </header>
+
+              {/* Main App Grid Layout */}
+              <main className="relative z-10 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-0">
+                
+                {/* Left/Center Panel (8 Cols) */}
+                <div className="lg:col-span-8 flex flex-col gap-6 h-full min-h-[600px]">
+                  
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-3/5">
+                    <div className="lg:col-span-2 bg-[#11151a] border border-[#1f2937] rounded-xl overflow-hidden relative shadow-2xl">
+                      <div className="absolute top-4 left-4 z-10 text-xs font-mono font-bold text-gray-400 bg-black/50 px-2 py-1 rounded">
+                        <Crosshair className="w-3 h-3 inline mr-2" />
+                        {t.helmetData}
+                      </div>
+                      <Canvas camera={{ position:[0, 1.5, 4], fov: 45 }}>
+                        <ambientLight intensity={0.4} />
+                        <directionalLight position={[10, 10, 5]} intensity={1} />
+                        <Environment preset="city" />
+                        <HardHat rotation={rotation} />
+                        <OrbitControls enableZoom={false} enablePan={false} />
+                        <ContactShadows position={[0, -1, 0]} opacity={0.4} scale={5} blur={2} />
+                      </Canvas>
+                    </div>
+
+                    <div className="flex flex-col gap-4">
+                      <div className="bg-[#11151a] border border-[#1f2937] rounded-xl p-4 flex-1 flex flex-col justify-center">
+                        <h3 className="text-xs text-gray-500 font-semibold mb-3 uppercase tracking-wider">{t.accel}</h3>
+                        <div className="space-y-2 font-mono text-sm">
+                          <div className="flex justify-between"><span>X:</span> <span className="text-blue-400">{accel.x}</span></div>
+                          <div className="flex justify-between"><span>Y:</span> <span className="text-blue-400">{accel.y}</span></div>
+                          <div className="flex justify-between"><span>Z:</span> <span className="text-blue-400">{accel.z}</span></div>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-[#11151a] border border-[#1f2937] rounded-xl p-4 flex-1 flex flex-col justify-center">
+                        <h3 className="text-xs text-gray-500 font-semibold mb-3 uppercase tracking-wider">{t.gyro}</h3>
+                        <div className="space-y-2 font-mono text-sm">
+                          <div className="flex justify-between"><span>X:</span> <span className="text-amber-400">{gyro.x}°</span></div>
+                          <div className="flex justify-between"><span>Y:</span> <span className="text-amber-400">{gyro.y}°</span></div>
+                          <div className="flex justify-between"><span>Z:</span> <span className="text-amber-400">{gyro.z}°</span></div>
+                        </div>
+                      </div>
+
+                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex-1 flex flex-col justify-center items-center relative overflow-hidden">
+                        <Clock className="absolute -right-4 -bottom-4 w-24 h-24 text-amber-500/5" />
+                        <h3 className="text-xs text-amber-500/70 font-semibold mb-1 uppercase tracking-wider">{t.timeInCave}</h3>
+                        <div className="text-3xl font-mono text-amber-500 font-bold tracking-widest drop-shadow-md">
+                          {formatTime(timeInCave)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-[#11151a] border border-[#1f2937] rounded-xl flex-1 flex flex-col overflow-hidden shadow-2xl min-h-[200px]">
+                    <div className="px-5 py-3 border-b border-[#1f2937] flex justify-between items-center bg-[#0d1117]">
+                      <h2 className="text-sm font-semibold flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-red-400" />
+                        {t.alertFeed}
+                      </h2>
+                      <button 
+                        onClick={() => setAlerts([])}
+                        className="text-xs text-gray-500 hover:text-white transition-colors"
+                      >
+                        {t.clear}
+                      </button>
+                    </div>
+                    <div className="p-4 flex-1 overflow-y-auto space-y-3">
+                      {alerts.length === 0 ? (
+                        <div className="h-full flex items-center justify-center text-gray-600 font-mono text-sm">
+                          -- NO ACTIVE HAZARDS --
+                        </div>
+                      ) : (
+                        alerts.map((alert) => (
+                          <div 
+                            key={alert.id} 
+                            className={`p-3 rounded-lg flex items-center justify-between border ${
+                              alert.severity === 'high' 
+                                ? 'bg-red-500/10 border-red-500/30 text-red-200' 
+                                : 'bg-orange-500/10 border-orange-500/30 text-orange-200'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <AlertTriangle className={`w-5 h-5 ${alert.severity === 'high' ? 'text-red-500 animate-pulse' : 'text-orange-500'}`} />
+                              <span className="font-medium text-sm">{alert.message}</span>
+                            </div>
+                            <span className="text-xs font-mono opacity-60">{alert.time}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Sidebar (4 Cols) */}
+                <div className="lg:col-span-4 flex flex-col gap-6 h-full min-h-[600px]">
+                  
+                  <div className="flex-[4] bg-black border border-[#1f2937] rounded-xl overflow-hidden relative shadow-2xl group min-h-[300px]">
+                    <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
+                      <span className="animate-pulse w-2.5 h-2.5 bg-red-600 rounded-full"></span>
+                      <span className="text-xs font-mono font-bold text-red-500 tracking-wider">{t.live}</span>
+                    </div>
+                    <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+                      <span className={`text-[10px] font-mono px-2 py-1 rounded border ${
+                        yoloOnline
+                          ? 'text-emerald-300 bg-emerald-400/10 border-emerald-500/20'
+                          : 'text-red-300 bg-red-400/10 border-red-500/20'
+                      }`}>
+                        {yoloOnline ? t.localAiOnline : t.localAiOffline}
+                      </span>
+                      <button
+                        onClick={toggleYolo}
+                        className={`text-[10px] font-semibold rounded px-2.5 py-1 border transition-colors ${
+                          yoloEnabled
+                            ? 'bg-emerald-600/25 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/35'
+                            : 'bg-gray-700/40 text-gray-200 border-gray-600 hover:bg-gray-700/60'
+                        }`}
+                      >
+                        {yoloEnabled ? t.yoloDisable : t.yoloEnable}
+                      </button>
+                    </div>
+                    <div className="absolute bottom-4 left-4 z-10">
+                      <span className="text-xs font-mono text-white/70 bg-black/50 px-2 py-1 rounded">
+                        <Video className="w-3 h-3 inline mr-2" />
+                        {t.liveCam}
+                      </span>
+                    </div>
+                    
+                    {nodeOnline && !streamError ? (
+                      <img
+                        src={streamSrc}
+                        alt="ArchGuard live stream"
+                        className="absolute inset-0 w-full h-full object-cover"
+                        onError={() => setStreamError(true)}
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#050505]">
+                        <div className="w-full h-full opacity-20" style={{
+                          backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px, #000 2px, #000 4px)',
+                          backgroundSize: '100% 4px'
+                        }}></div>
+                        <div className="absolute flex flex-col items-center gap-4 opacity-50">
+                          <Settings className="w-12 h-12 text-gray-500 animate-spin-slow" />
+                          <span className="font-mono text-sm text-gray-500">{streamError ? t.cameraLost : t.standby}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-[1] bg-[#11151a] border border-[#1f2937] rounded-xl flex flex-col overflow-hidden shadow-2xl min-h-[220px]">
+                    <div className="px-4 py-3 border-b border-[#1f2937] flex items-center gap-2 bg-[#0d1117]">
+                      <Users className="w-4 h-4 text-blue-400" />
+                      <h2 className="text-sm font-semibold">{t.userMgmt}</h2>
+                    </div>
+                    
+                    <div className="p-4 flex-1 flex flex-col gap-4 overflow-y-auto">
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          value={newUserName}
+                          onChange={(e) => setNewUserName(e.target.value)}
+                          placeholder={t.name}
+                          className="flex-1 bg-[#0b0f13] border border-[#374151] rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                        />
+                        <button 
+                          onClick={addUser}
+                          className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-sm transition-colors flex items-center gap-1"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="space-y-2">
+                        {users.map(user => (
+                          <div key={user.id} className="flex items-center justify-between bg-[#0b0f13] p-2.5 rounded border border-[#1f2937]">
+                            <div className="flex flex-col">
+                              <span className="text-sm font-medium">{user.name}</span>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="text-[10px] font-mono text-gray-500 uppercase">{t.ipAddress}:</span>
+                                {user.ip === 'Unbound' ? (
+                                  <select className="bg-transparent text-[10px] text-amber-500 font-mono focus:outline-none cursor-pointer">
+                                    <option>{t.bind}...</option>
+                                    <option>192.168.1.101</option>
+                                    <option>192.168.1.102</option>
+                                  </select>
+                                ) : (
+                                  <span className="text-[10px] text-blue-400 font-mono">{user.ip}</span>
+                                )}
+                              </div>
+                            </div>
+                            <button 
+                              onClick={() => deleteUser(user.id)}
+                              className="text-gray-500 hover:text-red-400 transition-colors p-1"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              </main>
+            </div>
+          );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<ArchGuardDashboard />);
+    </script>
+</body>
+</html>
